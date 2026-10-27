@@ -1,0 +1,17 @@
+# HTTPS automático (Let's Encrypt) para el dominio de .env; con DOMINIO=localhost usa un certificado local de prueba.
+{
+	email {$CORREO_ADMIN}
+}
+
+{$DOMINIO} {
+	encode gzip
+	reverse_proxy app:8800 {
+		flush_interval -1   # el canal en vivo (/api/eventos) y la espera de los agentes no se guardan en búfer
+		transport http {
+			read_timeout 20m
+		}
+	}
+	request_body {
+		max_size 600MB   # lo que suben los agentes y la biblioteca
+	}
+}

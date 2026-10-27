@@ -1,0 +1,7 @@
+.env
+.env.tmp
+app/
+respaldos/
+__pycache__/
+graphify-out/
+graphify-out

@@ -1,0 +1,90 @@
+# Campuslands Marketing IA en un servidor: la app en modo servidor (la IA corre en el equipo de cada persona),
+# PostgreSQL, HTTPS automático con Caddy y un respaldo diario de la base. Lo conduce montar.py; los valores salen de
+# .env (montar.py configurar lo escribe).
+name: marketing-ia
+
+services:
+  db:
+    image: postgres:16-alpine
+    profiles: ["base-propia"]          # sin este perfil, la app usa la base externa de DATABASE_URL
+    environment:
+      POSTGRES_DB: marketing_ia
+      POSTGRES_USER: marketing
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD en .env}
+    volumes:
+      - base:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketing -d marketing_ia"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?falta DATABASE_URL en .env}
+      AUTH_REQUIRED: "1"
+      HTTPS_ENABLED: "1"
+      HOST: 0.0.0.0
+      PORT: "8800"
+      MARKETING_IA_MODO: servidor
+      MARKETING_IA_URL_PUBLICA: https://${DOMINIO:?falta DOMINIO en .env}${PUERTO_HTTPS_PUBLICO:-}
+      MARKETING_IA_DOCUMENTOS: base
+      MARKETING_IA_DATA_DIR: /datos
+      MARKETING_IA_CONFIG: /datos/config.json
+      MARKETING_IA_SIN_MCP_REDES: "1"
+      LOCAL_ADMIN_EMAIL: ${CORREO_ADMIN:?falta CORREO_ADMIN en .env}
+    volumes:
+      - datos:/datos
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false                # con base externa no hay servicio db
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${PUERTO_HTTP:-80}:80"
+      - "${PUERTO_HTTPS:-443}:443"
+    environment:
+      DOMINIO: ${DOMINIO}
+      CORREO_ADMIN: ${CORREO_ADMIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_datos:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  respaldo:
+    image: postgres:16-alpine
+    profiles: ["base-propia"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DIAS: ${DIAS_DE_RESPALDO:-14}
+    volumes:
+      - ./respaldos:/respaldos
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          f=/respaldos/base-$$(date +%Y-%m-%d).sql.gz
+          pg_dump -h db -U marketing marketing_ia | gzip > "$$f.tmp" && mv "$$f.tmp" "$$f"
+          find /respaldos -name 'base-*.sql.gz' -mtime +$$DIAS -delete
+          sleep 86400
+        done
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  base:
+  datos:
+  caddy_datos:
+  caddy_config:
