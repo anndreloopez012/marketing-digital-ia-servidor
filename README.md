@@ -8,7 +8,9 @@ El sistema son dos piezas:
    guarda (usuarios, roles, marcas, correo, redes, publicaciones, documentos, bitácora). Publica lo programado aunque
    todas las PC estén apagadas.
 
-Cada empresa tiene su backend con su dominio. Al instalar la app en una PC se pone la URL de este servidor y el
+La app tiene dos modos: **individual** (sin backend: trabaja sola en la PC, como siempre) y **sistema** (con este
+backend: varias personas comparten los datos). Este repositorio es lo que hace falta para el modo sistema. Cada empresa
+tiene su backend con su dominio. Al instalar la app en una PC se pone la URL de este servidor y el
 usuario; la persona escribe su contraseña al abrir la app.
 
 ```
