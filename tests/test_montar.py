@@ -112,6 +112,14 @@ class ArchivosTests(unittest.TestCase):
                       "image: postgres:16-alpine", "image: caddy:2-alpine", "pg_dump"):
             self.assertIn(linea, texto)
 
+    def test_compose_declara_la_zona_y_el_vault_del_servidor(self):
+        texto = (RAIZ / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("MARKETING_IA_ZONA: ${ZONA:-America/Guatemala}", texto)   # sin ella las fechas viejas no se migran
+        self.assertIn("CAMPUS_VAULT: /datos/vault", texto)   # sin ella la memoria iría a la carpeta personal del contenedor
+
+    def test_la_imagen_trae_pg_dump_para_los_respaldos_de_la_pantalla(self):
+        self.assertIn("postgresql-client", (RAIZ / "Dockerfile").read_text(encoding="utf-8"))
+
     def test_env_y_app_nunca_se_suben(self):
         ignorados = (RAIZ / ".gitignore").read_text(encoding="utf-8").split()
         for nombre in (".env", "app/", "respaldos/"):

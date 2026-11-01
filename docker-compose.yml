@@ -35,6 +35,8 @@ services:
       MARKETING_IA_DOCUMENTOS: base
       MARKETING_IA_DATA_DIR: /datos
       MARKETING_IA_CONFIG: /datos/config.json
+      MARKETING_IA_ZONA: ${ZONA:-America/Guatemala}
+      CAMPUS_VAULT: /datos/vault
       MARKETING_IA_SIN_MCP_REDES: "1"
       LOCAL_ADMIN_EMAIL: ${CORREO_ADMIN:?falta CORREO_ADMIN en .env}
     volumes:
