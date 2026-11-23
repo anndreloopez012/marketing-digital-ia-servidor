@@ -17,7 +17,7 @@ backend (este repositorio: la base de datos y todo lo que el sistema guarda, en 
 | Repo aparte | Este repo no copia código de la app: `montar.py traer` la clona en `./app` a la versión de `.env`. Así actualizar es cambiar de etiqueta. |
 | `docker-compose.yml` | `app` (modo servidor, documentos en la base, cuentas obligatorias), `caddy` (HTTPS automático, sin búfer para el canal en vivo y los agentes), y con perfil `base-propia`: `db` (PostgreSQL 16) y `respaldo` (pg_dump diario, 14 días). |
 | `Dockerfile` | Python 3.12 slim + `psycopg[binary]` + FFmpeg; usuario sin privilegios; datos en el volumen `/datos`. |
-| `montar.py` | Solo biblioteca estándar, pasos repetibles con `--json` para que una IA los lea: diagnostico, configurar, traer, arrancar, verificar, admin, respaldar, actualizar, apagar. |
+| `montar.py` | Solo biblioteca estándar, pasos repetibles con `--json` para que una IA los lea: diagnostico, configurar, traer, arrancar, verificar, admin, respaldar, actualizar (respaldo antes y comprobación de la versión después), volver, apagar. |
 | `.env` | Lo escribe `configurar` con permisos 600; la clave de la base no cambia al repetir. Nunca se sube. |
 
 ## Reglas
