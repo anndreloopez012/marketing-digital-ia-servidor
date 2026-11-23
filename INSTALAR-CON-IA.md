@@ -67,7 +67,21 @@ queda guardado aquí. En Ajustes → Equipos, quien administra marca la PC que h
   `.env`). `python3 montar.py respaldar` hace uno ahora. Recomienda copiar `./respaldos` fuera del servidor.
 - Si venían de una instalación local con datos: copia su carpeta `data` al volumen y corre
   `docker compose exec app python scripts/instalar.py datos --migrar` (copia, no borra).
-- Actualizar: `python3 montar.py actualizar --version v1.2.0` (las migraciones de la base corren solas al arrancar).
+- Actualizar: `python3 montar.py actualizar --version vX` (vX: la etiqueta o rama de la app). Hace, en orden:
+  1. un respaldo de la base en `./respaldos/antes-de-vX-….sql` (sin respaldo no sigue; con base externa pide
+     `--sin-respaldo` después de que la empresa la respalde);
+  2. anota la versión que había (`APP_VERSION_ANTERIOR` en `.env`);
+  3. trae la versión y vuelve a arrancar: la app corre sola sus migraciones hasta la última;
+  4. comprueba en `/api/health` que responde la versión traída (`version` y `api`) y dice la última migración.
+  Si algo falla lo dice y propone la vuelta atrás.
+- Volver atrás: `python3 montar.py volver` regresa a la versión anterior. Si la base ya migró y la versión vieja no
+  arranca con ella: `python3 montar.py volver --respaldo respaldos/antes-de-vX-….sql --confirmar` (devuelve la base a
+  ese respaldo; lo hecho después se pierde, por eso pide confirmar).
+- La zona horaria (`ZONA` en `.env`, `MARKETING_IA_ZONA` dentro) y el vault del servidor (`CAMPUS_VAULT=/datos/vault`)
+  ya van en `docker-compose.yml`: no se tocan al actualizar.
+- Desde cualquier PC con la app se comprueba si el servidor quedó al día: `python3 scripts/servidor_al_dia.py`
+  (en la carpeta de la app; lee la dirección de la conexión guardada).
+- Sin Docker (montado a mano): la app trae `docs/actualizar-servidor.md` con un `actualizar.sh` de ejemplo.
 
 ## 8. Cierre
 Resume a la persona: la dirección, quién es el administrador, dónde están los respaldos, cómo conecta cada equipo y

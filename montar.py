@@ -12,7 +12,10 @@ Cada paso se puede repetir y responde en texto o en JSON (--json):
   verificar                   que la app responda por HTTPS en el dominio
   admin                       cómo ver la clave del primer administrador (la lee la persona; nunca se imprime aquí)
   respaldar                   copia ahora la base a ./respaldos (además del respaldo diario automático)
-  actualizar --version vX     trae esa versión y vuelve a arrancar (las migraciones corren solas)
+  actualizar --version vX     respalda la base, anota la versión anterior, trae esa versión, vuelve a arrancar (las
+                              migraciones corren solas al arrancar) y comprueba en /api/health que quedó la nueva
+  volver [--version vX] [--respaldo ARCHIVO --confirmar]
+                              regresa a la versión anterior (y, si se pide, devuelve la base al respaldo de antes)
   apagar                      detiene los contenedores (los datos quedan en sus volúmenes)
 
 Solo usa la biblioteca estándar. Nunca pide ni muestra contraseñas.
@@ -47,8 +50,8 @@ def salida(datos, como_json: bool, texto: str) -> None:
 
 
 # ── .env ────────────────────────────────────────────────────────────────────────
-def leer_env(ruta: Path = ENV) -> dict:
-    datos = {}
+def leer_env(ruta: Path | None = None) -> dict:
+    ruta, datos = ruta or ENV, {}
     try:
         for linea in ruta.read_text(encoding="utf-8").splitlines():
             if "=" in linea and not linea.lstrip().startswith("#"):
@@ -189,28 +192,52 @@ def arrancar(args) -> int:
     return 0
 
 
+def _leer_salud(env: dict, esperar: float) -> dict:
+    """Lo que responde /api/health (espera a que arranque). Lanza la última falla si no responde a tiempo."""
+    url = url_salud(env)
+    contexto = ssl._create_unverified_context() if env["DOMINIO"] == "localhost" else None   # localhost: certificado local de Caddy
+    fin = time.time() + float(esperar)
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=10, context=contexto) as r:
+                return json.loads(r.read() or b"{}")
+        except Exception:   # noqa: BLE001 — se reintenta hasta el plazo
+            if time.time() >= fin:
+                raise
+        time.sleep(3)
+
+
+def version_traida() -> str:
+    """La versión de la app que está en ./app (su pyproject.toml): la que /api/health debe decir al arrancar."""
+    try:
+        texto = (APP / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r'^version\s*=\s*"([^"]+)"', texto, re.M)
+    return m.group(1) if m else ""
+
+
+def al_dia(salud: dict) -> bool:
+    """La app que responde es la traída: publica su versión (las anteriores al 22 nov no lo hacían) y coincide."""
+    return bool(salud.get("version")) and salud.get("version") == version_traida()
+
+
 def verificar(args) -> int:
     env = _env_o_error(args)
     if env is None:
         return 1
     url = url_salud(env)
-    contexto = ssl._create_unverified_context() if env["DOMINIO"] == "localhost" else None   # localhost: certificado local de Caddy
-    fin, ultimo = time.time() + float(args.esperar), ""
-    while True:
-        try:
-            with urllib.request.urlopen(url, timeout=10, context=contexto) as r:
-                datos = json.loads(r.read() or b"{}")
-            salida({"ok": True, "url": url, "salud": datos}, args.json, f"La app responde en {url}.")
-            return 0
-        except Exception as error:   # noqa: BLE001 — se informa tal cual
-            ultimo = str(error)
-        if time.time() >= fin:
-            break
-        time.sleep(3)
-    msg = (f"La app no responde en {url}: {ultimo}. Revisa que el DNS apunte aquí, que los puertos 80 y 443 estén "
-           "abiertos y «docker compose logs app caddy».")
-    salida({"ok": False, "url": url, "error": msg}, args.json, msg)
-    return 1
+    try:
+        datos = _leer_salud(env, args.esperar)
+    except Exception as error:   # noqa: BLE001 — se informa tal cual
+        msg = (f"La app no responde en {url}: {error}. Revisa que el DNS apunte aquí, que los puertos 80 y 443 estén "
+               "abiertos y «docker compose logs app caddy».")
+        salida({"ok": False, "url": url, "error": msg}, args.json, msg)
+        return 1
+    version = datos.get("version") or "una versión que aún no la publica"
+    salida({"ok": True, "url": url, "salud": datos, "al_dia": al_dia(datos)}, args.json,
+           f"La app responde en {url} (versión {version}, API {datos.get('api', '1 o anterior')}).")
+    return 0
 
 
 def admin(args) -> int:
@@ -220,7 +247,7 @@ def admin(args) -> int:
     return 0
 
 
-def respaldar(args) -> int:
+def respaldar(args, prefijo: str = "base") -> int:
     env = _env_o_error(args)
     if env is None:
         return 1
@@ -228,7 +255,7 @@ def respaldar(args) -> int:
         msg = "La base es externa: su respaldo es el de la empresa (aquí no se toca)."
         salida({"ok": False, "error": msg}, args.json, msg); return 1
     (RAIZ / "respaldos").mkdir(exist_ok=True)
-    destino = RAIZ / "respaldos" / f"base-{datetime.now():%Y-%m-%d-%H%M%S}.sql"
+    destino = RAIZ / "respaldos" / f"{prefijo}-{datetime.now():%Y-%m-%d-%H%M%S}.sql"
     with open(destino, "w", encoding="utf-8") as fh:
         r = _correr(compose_base(env) + ["exec", "-T", "db", "pg_dump", "-U", "marketing", "marketing_ia"], stdout=fh)
     if r.returncode != 0:
@@ -239,12 +266,94 @@ def respaldar(args) -> int:
 
 
 def actualizar(args) -> int:
+    """Respaldo → versión anterior anotada → traer → arrancar (migra solo) → comprobar. Sin respaldo no se toca nada."""
     env = _env_o_error(args)
     if env is None:
         return 1
+    if env.get("BASE") == "externa":
+        if not getattr(args, "sin_respaldo", False):
+            msg = ("La base es externa: respáldala con la empresa antes de actualizar y repite con --sin-respaldo "
+                   "(las migraciones nuevas no se deshacen solas).")
+            salida({"ok": False, "error": msg}, args.json, msg); return 1
+    elif respaldar(args, prefijo=f"antes-de-{re.sub(r'[^A-Za-z0-9._-]', '_', args.version)}") != 0:
+        msg = "No se actualizó: sin respaldo de la base no se sigue. Revisa que la base esté encendida y repite."
+        salida({"ok": False, "error": msg}, args.json, msg); return 1
+    anterior = env.get("APP_VERSION") or APP_VERSION
+    if anterior != args.version:
+        env["APP_VERSION_ANTERIOR"] = anterior
     env["APP_VERSION"] = args.version
     _escribir_env(ENV, env)
-    return traer(args) or arrancar(args)
+    if traer(args) or arrancar(args):
+        return _sugerir_volver(args, "La actualización no terminó.")
+    try:
+        salud = _leer_salud(env, getattr(args, "esperar", "180"))
+    except Exception as error:   # noqa: BLE001 — se informa tal cual
+        return _sugerir_volver(args, f"La app no responde tras actualizar: {error}.")
+    if not al_dia(salud):
+        return _sugerir_volver(args, f"La app responde, pero dice la versión {salud.get('version') or '(ninguna)'} y se "
+                                     f"esperaba {version_traida() or args.version}.")
+    migracion = ultima_migracion(env)
+    salida({"ok": True, "version": salud.get("version"), "api": salud.get("api"), "migracion": migracion,
+            "anterior": env.get("APP_VERSION_ANTERIOR", "")},
+           args.json, f"Actualizada a {args.version} (versión {salud.get('version')}, API {salud.get('api')}"
+                      f"{f', migración {migracion}' if migracion else ''}). Las PC lo notan al volver a abrir la app.")
+    return 0
+
+
+def ultima_migracion(env: dict) -> str:
+    """La última migración aplicada en la base propia (las corre la app al arrancar); "" si no se puede saber."""
+    if env.get("BASE") == "externa":
+        return ""
+    r = _correr(compose_base(env) + ["exec", "-T", "db", "psql", "-U", "marketing", "-d", "marketing_ia", "-tAc",
+                                     "SELECT MAX(version) FROM schema_migrations"], capture_output=True)
+    texto = (r.stdout or "").strip()
+    return texto if r.returncode == 0 and texto.isdigit() else ""
+
+
+def _sugerir_volver(args, motivo: str) -> int:
+    msg = (f"{motivo} Revisa «docker compose logs app». Para regresar a la versión anterior: python3 montar.py volver "
+           "(y, si la base ya migró y algo falla, python3 montar.py volver --respaldo respaldos/antes-de-… --confirmar).")
+    salida({"ok": False, "error": msg}, args.json, msg)
+    return 1
+
+
+def volver(args) -> int:
+    """Regresa a la versión anterior. Con --respaldo y --confirmar también devuelve la base a ese respaldo (lo hecho
+    después del respaldo se pierde: por eso pide confirmar)."""
+    env = _env_o_error(args)
+    if env is None:
+        return 1
+    version = args.version or env.get("APP_VERSION_ANTERIOR")
+    if not version:
+        msg = "No hay versión anterior anotada: di cuál con --version vX."
+        salida({"ok": False, "error": msg}, args.json, msg); return 1
+    if args.respaldo:
+        archivo = Path(args.respaldo)
+        if not archivo.is_file():
+            msg = f"No existe el respaldo {archivo}."
+            salida({"ok": False, "error": msg}, args.json, msg); return 1
+        if not args.confirmar:
+            msg = (f"Devolver la base a {archivo.name} borra lo que se hizo después. Si es lo que quieres, repite con --confirmar.")
+            salida({"ok": False, "error": msg}, args.json, msg); return 1
+        if env.get("BASE") == "externa":
+            msg = "La base es externa: su restauración la hace la empresa."
+            salida({"ok": False, "error": msg}, args.json, msg); return 1
+        _correr(compose_base(env) + ["stop", "app"])
+        with open(archivo, encoding="utf-8") as fh:
+            limpiar = _correr(compose_base(env) + ["exec", "-T", "db", "psql", "-U", "marketing", "-d", "marketing_ia", "-v",
+                                                   "ON_ERROR_STOP=1", "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"])
+            r = limpiar if limpiar.returncode else _correr(compose_base(env) + ["exec", "-T", "db", "psql", "-U", "marketing", "-d",
+                                                                                "marketing_ia", "-v", "ON_ERROR_STOP=1"], stdin=fh)
+        if r.returncode != 0:
+            msg = "No se pudo devolver la base al respaldo: la app quedó detenida. Revisa «docker compose logs db»."
+            salida({"ok": False, "error": msg}, args.json, msg); return 1
+    actual = env.get("APP_VERSION") or APP_VERSION
+    env["APP_VERSION"], env["APP_VERSION_ANTERIOR"] = version, actual
+    _escribir_env(ENV, env)
+    if traer(args) or arrancar(args):
+        return 1
+    salida({"ok": True, "version": version}, args.json, f"De vuelta en {version}. Comprueba con: python3 montar.py verificar.")
+    return 0
 
 
 def apagar(args) -> int:
@@ -260,7 +369,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="montar.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="paso", required=True)
     pasos = {"diagnostico": diagnostico, "configurar": configurar, "traer": traer, "arrancar": arrancar, "verificar": verificar,
-             "admin": admin, "respaldar": respaldar, "actualizar": actualizar, "apagar": apagar}
+             "admin": admin, "respaldar": respaldar, "actualizar": actualizar, "volver": volver, "apagar": apagar}
     for nombre in pasos:
         s = sub.add_parser(nombre); s.add_argument("--json", action="store_true", help="salida en JSON")
         if nombre == "configurar":
@@ -271,6 +380,12 @@ def main(argv=None) -> int:
             s.add_argument("--puertos", help="HTTP,HTTPS (por omisión 80,443)")
         if nombre == "actualizar":
             s.add_argument("--version", required=True)
+            s.add_argument("--sin-respaldo", action="store_true", help="solo con base externa, ya respaldada por la empresa")
+            s.add_argument("--esperar", default="180", help="segundos que espera a que responda la versión nueva")
+        if nombre == "volver":
+            s.add_argument("--version", help="a cuál (por omisión, la anterior anotada al actualizar)")
+            s.add_argument("--respaldo", help="devuelve también la base a este respaldo (borra lo hecho después)")
+            s.add_argument("--confirmar", action="store_true")
         if nombre == "verificar":
             s.add_argument("--esperar", default="120", help="segundos que espera a que responda")
     args = p.parse_args(argv)
