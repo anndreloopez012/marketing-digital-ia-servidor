@@ -38,6 +38,8 @@ python3 montar.py diagnostico
 python3 montar.py configurar --dominio marketing.tuempresa.com --correo admin@tuempresa.com [--base 'postgresql://…']
 python3 montar.py traer && python3 montar.py arrancar && python3 montar.py verificar
 python3 montar.py admin        # cómo ver la clave del primer administrador
+python3 montar.py actualizar --version vX   # respaldo → versión nueva → migraciones → comprobación
+python3 montar.py volver                    # regresa a la versión anterior (y con --respaldo … --confirmar, la base)
 ```
 
 | Archivo | Qué es |
